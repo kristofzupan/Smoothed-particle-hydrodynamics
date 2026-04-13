@@ -1,6 +1,8 @@
 import pygame
 import numpy as np
 import math
+import cv2
+import colorsys
 
 LOGICAL_SIZE = pygame.math.Vector2(20, 11.25)
 SCREEN_SIZE = pygame.math.Vector2(1280, 720)
@@ -17,9 +19,9 @@ gravity = 0
 collision_damping = 0.95
 particle_color = (255, 255, 255)
 particle_size = 0.05
-particle_spacing = 0.1 
+particle_spacing = 0.05 
 
-bounds_size = pygame.math.Vector2(6,4)
+bounds_size = pygame.math.Vector2(5,3)
 bounds_color = (100, 100, 100)
 
 # --- SPH constants ---
@@ -27,8 +29,10 @@ smoothing_radius = 0.3
 particle_mass = 1 
 densities = []
 
-target_density = 1.5       
+target_density = 1.5
 pressure_multiplier = 5
+
+max_display_speed = 2.0
 
 def random_arrangment(half_bounds):
     for i in range(num_particles):
@@ -131,6 +135,14 @@ def calculate_pressure_force(particle_index):
 
 # --- Rendering ---
 
+def velocity_to_color(speed, max_speed):
+    t = speed / max_speed if max_speed > 0 else 0.0
+    t = max(0.0, min(1.0, t))
+    hue = (1.0 - t) * 240.0 / 360.0  # blue (240°) -> green -> yellow -> red (0°)
+    r, g, b = colorsys.hsv_to_rgb(hue, 1.0, 1.0)
+    return (int(r * 255), int(g * 255), int(b * 255))
+
+
 kernel_sprite = None
 
 def create_kernel_cloud():
@@ -197,11 +209,15 @@ def update(dt):
         resolve_collisions(positions[i], velocities[i])
 
         draw_pos = (positions[i] + LOGICAL_SIZE / 2) * SCALE
-        
+
         cloud_rect = kernel_sprite.get_rect(center=(int(draw_pos.x), int(draw_pos.y)))
         screen.blit(kernel_sprite, cloud_rect, special_flags=pygame.BLEND_RGB_ADD)
-        
-        pygame.draw.circle(screen, particle_color, draw_pos, particle_size * SCALE)
+
+        color = velocity_to_color(velocities[i].magnitude(), max_display_speed)
+        pygame.draw.circle(screen, color, draw_pos, particle_size * SCALE)
+
+VIDEO_FPS = 30
+VIDEO_OUTPUT = "simulation.mp4"
 
 def main():
     global screen, kernel_sprite
@@ -212,8 +228,11 @@ def main():
     kernel_sprite = create_kernel_cloud()
 
     clock = pygame.time.Clock()
-
     background_color = (0, 0, 0)
+
+    fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+    video = cv2.VideoWriter(VIDEO_OUTPUT, fourcc, VIDEO_FPS, (int(SCREEN_SIZE.x), int(SCREEN_SIZE.y)))
+    video_frame_accum = 0.0
 
     running = True
     while running:
@@ -233,15 +252,25 @@ def main():
         )
         pygame.draw.rect(screen, bounds_color, bounds_rect, 2)
 
-        dt = min(clock.tick(0) / 1000.0, 0.05)  
+        dt = min(clock.tick(0) / 1000.0, 0.05)
         update(dt)
 
         font = pygame.font.SysFont("Arial", 10)
-        text = font.render( f"FPS: {clock.get_fps():.2f}", True, (255, 255, 255))
+        text = font.render(f"FPS: {clock.get_fps():.2f}", True, (255, 255, 255))
         screen.blit(text, (10, 10))
         pygame.display.flip()
 
+        video_frame_accum += dt
+        if video_frame_accum >= 1.0 / VIDEO_FPS:
+            video_frame_accum -= 1.0 / VIDEO_FPS
+            frame = pygame.surfarray.array3d(screen)        # (W, H, 3) RGB
+            frame = np.transpose(frame, (1, 0, 2))          # -> (H, W, 3)
+            frame = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
+            video.write(frame)
+
+    video.release()
     pygame.quit()
+    print(f"Video saved to {VIDEO_OUTPUT}")
 
 if __name__ == "__main__":
     main()
