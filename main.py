@@ -14,16 +14,16 @@ velocities = []
 
 gravity = 0
 collision_damping = 0.7
-particle_color = (50, 50, 255)
-particle_size = 0.1
+particle_color = (255, 255, 255)
+particle_size = 0.05
 particle_spacing = 0.2 
 
 bounds_size = pygame.math.Vector2(19, 10.25)
 bounds_color = (100, 100, 100)
 
 # SPH constants
-smoothing_radius = 1.5  # 'h' in the formulas
-particle_mass = 1.0 # 'm' in the formulas
+smoothing_radius = 1 # 'h' in the formulas
+particle_mass = 1 # 'm' in the formulas
 densities = []
 
 def random_arrangment(half_bounds):
@@ -75,6 +75,39 @@ def calculate_densities():
             
         densities[i] = density
 
+kernel_sprite = None
+
+def create_kernel_cloud():
+    # Convert logical radius to screen pixels
+    radius_screen = int(smoothing_radius * SCALE)
+    size = radius_screen * 2
+    
+    # Create a black surface (Black = 0, so it doesn't affect additive blending)
+    surf = pygame.Surface((size, size))
+    center = pygame.math.Vector2(radius_screen, radius_screen)
+    
+    # Find the maximum possible value of the kernel (at distance 0)
+    max_influence = smoothing_kernel(smoothing_radius, 0)
+    
+    for x in range(size):
+        for y in range(size):
+            dist_screen = center.distance_to(pygame.math.Vector2(x, y))
+            dist_logical = dist_screen / SCALE
+            
+            if dist_logical < smoothing_radius:
+                influence = smoothing_kernel(smoothing_radius, dist_logical)
+                
+                # Normalize the influence and map to a dark blue color
+                intensity = (influence / max_influence) if max_influence > 0 else 0
+                
+                r = 0
+                g = int(intensity * 15)
+                b = int(intensity * 50)
+                
+                surf.set_at((x, y), (r, g, b))
+                
+    return surf
+
 def resolve_collisions(pos, vel):
     half_bounds = bounds_size / 2 - pygame.math.Vector2(particle_size, particle_size)
 
@@ -100,13 +133,23 @@ def update(dt):
 
         # Convert logical position to screen coordinates
         draw_pos = (positions[i] + LOGICAL_SIZE / 2) * SCALE
+        
+        # --- REPLACE THE DRAW.CIRCLE WITH THIS ---
+        # 1. Get the rect so we center the cloud perfectly on the particle
+        cloud_rect = kernel_sprite.get_rect(center=(int(draw_pos.x), int(draw_pos.y)))
+        # 2. Blit the cloud using additive blending
+        screen.blit(kernel_sprite, cloud_rect, special_flags=pygame.BLEND_RGB_ADD)
+        # 3. Draw a tiny white dot in the center to show the actual particle        
         pygame.draw.circle(screen, particle_color, draw_pos, particle_size * SCALE)
 
 def main():
-    global screen
+    global screen, kernel_sprite
     pygame.init()
     start()
     screen = pygame.display.set_mode((int(SCREEN_SIZE.x), int(SCREEN_SIZE.y)))
+
+    kernel_sprite = create_kernel_cloud()
+
     clock = pygame.time.Clock()
 
     background_color = (0, 0, 0)
