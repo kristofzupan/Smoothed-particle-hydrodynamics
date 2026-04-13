@@ -8,30 +8,27 @@ SCALE = SCREEN_SIZE.x / LOGICAL_SIZE.x
 
 screen = None
 
-# Temporarily lowered for Python CPU performance testing. 
-# Feel free to raise it back to 288 if your PC handles it smoothly!
-num_particles = 300 
+num_particles = 400 
 positions = []
+predicted_positions = []
 velocities = []
 
-gravity = 0 # Changed to 10 so the fluid falls and splashes!
+gravity = 0 
 collision_damping = 0.95
 particle_color = (255, 255, 255)
 particle_size = 0.05
-particle_spacing = 0.01 
+particle_spacing = 0.1 
 
-# bounds_size = pygame.math.Vector2(19, 10.25)
-bounds_size = pygame.math.Vector2(5,3)
+bounds_size = pygame.math.Vector2(6,4)
 bounds_color = (100, 100, 100)
 
 # --- SPH constants ---
-smoothing_radius = 0.3 # 'h' in the formulas
-particle_mass = 1 # 'm' in the formulas
+smoothing_radius = 0.3 
+particle_mass = 1 
 densities = []
 
-# New Pressure Constants
-target_density = 1.5       # The density the fluid "wants" to be at
-pressure_multiplier = 0.5 # How aggressively it pushes apart when compressed
+target_density = 1.5       
+pressure_multiplier = 5
 
 def random_arrangment(half_bounds):
     for i in range(num_particles):
@@ -52,10 +49,12 @@ def grid_arrangment(half_bounds):
         velocities.append(pygame.math.Vector2(0, 0))
 
 def start():
-    global positions, velocities, densities
+    global positions, velocities, densities, predicted_positions
     positions = []
     velocities = []
-    densities = [0.0] * num_particles # Initialize with zeros
+    densities = [0.0] * num_particles 
+    
+    predicted_positions = [pygame.math.Vector2(0, 0) for _ in range(num_particles)]
 
     half_bounds = bounds_size / 2 - pygame.math.Vector2(particle_size, particle_size)
 
@@ -92,20 +91,22 @@ def calculate_densities():
     for i in range(num_particles):
         density = 0.0
         for j in range(num_particles):
-            dist = positions[i].distance_to(positions[j])
+            # Use predicted positions for distance
+            dist = predicted_positions[i].distance_to(predicted_positions[j])
             influence = smoothing_kernel(smoothing_radius, dist)
             density += particle_mass * influence
         densities[i] = density
 
 def calculate_pressure_force(particle_index):
     pressure_force = pygame.math.Vector2(0, 0)
-    density_self = densities[particle_index] # Get the current particle's density
+    density_self = densities[particle_index] 
     
     for other_particle_index in range(num_particles):
         if particle_index == other_particle_index:
             continue
             
-        offset = positions[other_particle_index] - positions[particle_index]
+        # Use predicted positions for direction and distance
+        offset = predicted_positions[other_particle_index] - predicted_positions[particle_index]
         dst = offset.magnitude()
         
         if dst == 0:
@@ -123,10 +124,7 @@ def calculate_pressure_force(particle_index):
         if density_other == 0:
             continue
             
-        # --- NEW SHARED PRESSURE LOGIC ---
         shared_pressure = calculate_shared_pressure(density_self, density_other)
-        
-        # Apply the shared pressure to the force calculation
         pressure_force += dir * shared_pressure * slope * particle_mass / density_other
         
     return pressure_force
@@ -174,14 +172,16 @@ def resolve_collisions(pos, vel):
         vel.y *= -1 * collision_damping
 
 def update(dt):
-    global screen, positions, velocities, gravity
+    global screen, positions, predicted_positions, velocities, gravity
 
-    # PHASE 1: Apply gravity and calculate densities
+    # 5. Predict next positions BEFORE calculating densities
+    prediction_time_step = 1.0 / 120.0
     for i in range(num_particles):
         velocities[i] += pygame.math.Vector2(0, 1) * gravity * dt
+        predicted_positions[i] = positions[i] + velocities[i] * prediction_time_step
+
     calculate_densities()
 
-    # PHASE 2: Calculate and apply pressure forces
     new_velocities = list(velocities) 
     for i in range(num_particles):
         pressure_force = calculate_pressure_force(i)
@@ -192,7 +192,6 @@ def update(dt):
 
     velocities = new_velocities
 
-    # PHASE 3: Update positions, resolve collisions, and draw
     for i in range(num_particles):
         positions[i] += velocities[i] * dt
         resolve_collisions(positions[i], velocities[i])
