@@ -8,23 +8,30 @@ SCALE = SCREEN_SIZE.x / LOGICAL_SIZE.x
 
 screen = None
 
-num_particles = 288
+# Temporarily lowered for Python CPU performance testing. 
+# Feel free to raise it back to 288 if your PC handles it smoothly!
+num_particles = 300 
 positions = []
 velocities = []
 
-gravity = 0
-collision_damping = 0.7
+gravity = 0 # Changed to 10 so the fluid falls and splashes!
+collision_damping = 0.95
 particle_color = (255, 255, 255)
 particle_size = 0.05
-particle_spacing = 0.2 
+particle_spacing = 0.01 
 
-bounds_size = pygame.math.Vector2(19, 10.25)
+# bounds_size = pygame.math.Vector2(19, 10.25)
+bounds_size = pygame.math.Vector2(5,3)
 bounds_color = (100, 100, 100)
 
-# SPH constants
-smoothing_radius = 1 # 'h' in the formulas
+# --- SPH constants ---
+smoothing_radius = 0.3 # 'h' in the formulas
 particle_mass = 1 # 'm' in the formulas
 densities = []
+
+# New Pressure Constants
+target_density = 1.5       # The density the fluid "wants" to be at
+pressure_multiplier = 0.5 # How aggressively it pushes apart when compressed
 
 def random_arrangment(half_bounds):
     for i in range(num_particles):
@@ -52,41 +59,89 @@ def start():
 
     half_bounds = bounds_size / 2 - pygame.math.Vector2(particle_size, particle_size)
 
-    random_arrangment(half_bounds)
-    # grid_arrangment(half_bounds)
+    # random_arrangment(half_bounds)
+    grid_arrangment(half_bounds)
+
+# --- SPH Math Functions ---
 
 def smoothing_kernel(radius, distance):
     if distance >= radius:
         return 0.0
     
-    volume = (math.pi * radius ** 8.0) / 4.0
-    return ((radius * radius - distance * distance) ** 3.0) / volume
+    volume = (math.pi * (radius ** 4.0)) / 6.0
+    return ((radius - distance) ** 2.0) / volume
+
+def smoothing_kernel_derivative(radius, distance):
+    if distance >= radius:
+        return 0.0
+    
+    scale = 12.0 / ((radius ** 4.0) * math.pi)
+    return (distance - radius) * scale
+
+def convert_density_to_pressure(density):
+    density_error = density - target_density
+    pressure = density_error * pressure_multiplier
+    return pressure
+
+def calculate_shared_pressure(density_a, density_b):
+    pressure_a = convert_density_to_pressure(density_a)
+    pressure_b = convert_density_to_pressure(density_b)
+    return (pressure_a + pressure_b) / 2.0
 
 def calculate_densities():
     for i in range(num_particles):
         density = 0.0
         for j in range(num_particles):
-            # Calculate distance between particle i and j
             dist = positions[i].distance_to(positions[j])
-            
-            # Get influence from kernel
             influence = smoothing_kernel(smoothing_radius, dist)
             density += particle_mass * influence
-            
         densities[i] = density
+
+def calculate_pressure_force(particle_index):
+    pressure_force = pygame.math.Vector2(0, 0)
+    density_self = densities[particle_index] # Get the current particle's density
+    
+    for other_particle_index in range(num_particles):
+        if particle_index == other_particle_index:
+            continue
+            
+        offset = positions[other_particle_index] - positions[particle_index]
+        dst = offset.magnitude()
+        
+        if dst == 0:
+            dir = pygame.math.Vector2(np.random.uniform(-1, 1), np.random.uniform(-1, 1))
+            if dir.length() > 0:
+                dir = dir.normalize()
+            else:
+                dir = pygame.math.Vector2(0, 1)
+        else:
+            dir = offset / dst
+            
+        slope = smoothing_kernel_derivative(smoothing_radius, dst)
+        density_other = densities[other_particle_index]
+        
+        if density_other == 0:
+            continue
+            
+        # --- NEW SHARED PRESSURE LOGIC ---
+        shared_pressure = calculate_shared_pressure(density_self, density_other)
+        
+        # Apply the shared pressure to the force calculation
+        pressure_force += dir * shared_pressure * slope * particle_mass / density_other
+        
+    return pressure_force
+
+# --- Rendering ---
 
 kernel_sprite = None
 
 def create_kernel_cloud():
-    # Convert logical radius to screen pixels
     radius_screen = int(smoothing_radius * SCALE)
     size = radius_screen * 2
     
-    # Create a black surface (Black = 0, so it doesn't affect additive blending)
     surf = pygame.Surface((size, size))
     center = pygame.math.Vector2(radius_screen, radius_screen)
     
-    # Find the maximum possible value of the kernel (at distance 0)
     max_influence = smoothing_kernel(smoothing_radius, 0)
     
     for x in range(size):
@@ -97,7 +152,6 @@ def create_kernel_cloud():
             if dist_logical < smoothing_radius:
                 influence = smoothing_kernel(smoothing_radius, dist_logical)
                 
-                # Normalize the influence and map to a dark blue color
                 intensity = (influence / max_influence) if max_influence > 0 else 0
                 
                 r = 0
@@ -122,24 +176,32 @@ def resolve_collisions(pos, vel):
 def update(dt):
     global screen, positions, velocities, gravity
 
+    # PHASE 1: Apply gravity and calculate densities
+    for i in range(num_particles):
+        velocities[i] += pygame.math.Vector2(0, 1) * gravity * dt
     calculate_densities()
 
-    for i in range(len(positions)):
-        # (Later: Pressure force calculation will go here)
+    # PHASE 2: Calculate and apply pressure forces
+    new_velocities = list(velocities) 
+    for i in range(num_particles):
+        pressure_force = calculate_pressure_force(i)
+        
+        if densities[i] > 0:
+            pressure_acceleration = pressure_force / densities[i]
+            new_velocities[i] += pressure_acceleration * dt
 
-        velocities[i] += pygame.math.Vector2(0, 1) * gravity * dt
+    velocities = new_velocities
+
+    # PHASE 3: Update positions, resolve collisions, and draw
+    for i in range(num_particles):
         positions[i] += velocities[i] * dt
         resolve_collisions(positions[i], velocities[i])
 
-        # Convert logical position to screen coordinates
         draw_pos = (positions[i] + LOGICAL_SIZE / 2) * SCALE
         
-        # --- REPLACE THE DRAW.CIRCLE WITH THIS ---
-        # 1. Get the rect so we center the cloud perfectly on the particle
         cloud_rect = kernel_sprite.get_rect(center=(int(draw_pos.x), int(draw_pos.y)))
-        # 2. Blit the cloud using additive blending
         screen.blit(kernel_sprite, cloud_rect, special_flags=pygame.BLEND_RGB_ADD)
-        # 3. Draw a tiny white dot in the center to show the actual particle        
+        
         pygame.draw.circle(screen, particle_color, draw_pos, particle_size * SCALE)
 
 def main():
@@ -162,7 +224,6 @@ def main():
 
         screen.fill(background_color)
 
-        # Draw bounding box (convert logical bounds to screen coordinates)
         center = SCREEN_SIZE / 2
         bounds_screen = bounds_size * SCALE
         bounds_rect = pygame.Rect(
@@ -173,14 +234,13 @@ def main():
         )
         pygame.draw.rect(screen, bounds_color, bounds_rect, 2)
 
-        dt = min(clock.tick(0) / 1000.0, 0.05)  # Delta time in seconds, capped at 50ms
+        dt = min(clock.tick(0) / 1000.0, 0.05)  
         update(dt)
 
         font = pygame.font.SysFont("Arial", 10)
         text = font.render( f"FPS: {clock.get_fps():.2f}", True, (255, 255, 255))
         screen.blit(text, (10, 10))
         pygame.display.flip()
-
 
     pygame.quit()
 
