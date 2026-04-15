@@ -10,18 +10,18 @@ SCALE = SCREEN_SIZE.x / LOGICAL_SIZE.x
 
 screen = None
 
-num_particles = 400 
+num_particles = 200 
 positions = []
 predicted_positions = []
 velocities = []
 
-gravity = 0 
+gravity = 10
 collision_damping = 0.95
 particle_color = (255, 255, 255)
 particle_size = 0.05
 particle_spacing = 0.05 
 
-bounds_size = pygame.math.Vector2(5,3)
+bounds_size = pygame.math.Vector2(8,5)
 bounds_color = (100, 100, 100)
 
 # --- SPH constants ---
@@ -30,9 +30,13 @@ particle_mass = 1
 densities = []
 
 target_density = 1.5
-pressure_multiplier = 5
+pressure_multiplier = 30
 
 max_display_speed = 2.0
+
+# --- Mouse interaction ---
+interaction_radius = 2
+interaction_strength = 50.0
 
 def random_arrangment(half_bounds):
     for i in range(num_particles):
@@ -84,7 +88,7 @@ def smoothing_kernel_derivative(radius, distance):
 def convert_density_to_pressure(density):
     density_error = density - target_density
     pressure = density_error * pressure_multiplier
-    return pressure
+    return max(0.0, pressure)  # Clamp to zero to prevent vacuum attraction
 
 def calculate_shared_pressure(density_a, density_b):
     pressure_a = convert_density_to_pressure(density_a)
@@ -172,6 +176,16 @@ def create_kernel_cloud():
                 
     return surf
 
+def calculate_interaction_force(input_pos, radius, strength, particle_index):
+    offset = input_pos - positions[particle_index]
+    sqr_dst = offset.dot(offset)
+    if sqr_dst >= radius * radius:
+        return pygame.math.Vector2(0, 0)
+    dst = math.sqrt(sqr_dst)
+    dir_to_input = offset / dst if dst > 1e-6 else pygame.math.Vector2(0, 0)
+    centre_t = 1.0 - dst / radius
+    return (dir_to_input * strength - velocities[particle_index]) * centre_t
+
 def resolve_collisions(pos, vel):
     half_bounds = bounds_size / 2 - pygame.math.Vector2(particle_size, particle_size)
 
@@ -183,10 +197,10 @@ def resolve_collisions(pos, vel):
         pos.y = half_bounds.y * np.sign(pos.y)
         vel.y *= -1 * collision_damping
 
-def update(dt):
+def update(dt, mouse_input_pos=None, mouse_strength=0.0):
     global screen, positions, predicted_positions, velocities, gravity
 
-    # 5. Predict next positions BEFORE calculating densities
+    # Predict next positions BEFORE calculating densities
     prediction_time_step = 1.0 / 120.0
     for i in range(num_particles):
         velocities[i] += pygame.math.Vector2(0, 1) * gravity * dt
@@ -194,13 +208,17 @@ def update(dt):
 
     calculate_densities()
 
-    new_velocities = list(velocities) 
+    new_velocities = list(velocities)
     for i in range(num_particles):
         pressure_force = calculate_pressure_force(i)
-        
+
         if densities[i] > 0:
             pressure_acceleration = pressure_force / densities[i]
             new_velocities[i] += pressure_acceleration * dt
+
+        if mouse_input_pos is not None and mouse_strength != 0.0:
+            interaction = calculate_interaction_force(mouse_input_pos, interaction_radius, mouse_strength, i)
+            new_velocities[i] += interaction * dt
 
     velocities = new_velocities
 
@@ -210,8 +228,8 @@ def update(dt):
 
         draw_pos = (positions[i] + LOGICAL_SIZE / 2) * SCALE
 
-        cloud_rect = kernel_sprite.get_rect(center=(int(draw_pos.x), int(draw_pos.y)))
-        screen.blit(kernel_sprite, cloud_rect, special_flags=pygame.BLEND_RGB_ADD)
+        # cloud_rect = kernel_sprite.get_rect(center=(int(draw_pos.x), int(draw_pos.y)))
+        # screen.blit(kernel_sprite, cloud_rect, special_flags=pygame.BLEND_RGB_ADD)
 
         color = velocity_to_color(velocities[i].magnitude(), max_display_speed)
         pygame.draw.circle(screen, color, draw_pos, particle_size * SCALE)
@@ -225,7 +243,7 @@ def main():
     start()
     screen = pygame.display.set_mode((int(SCREEN_SIZE.x), int(SCREEN_SIZE.y)))
 
-    kernel_sprite = create_kernel_cloud()
+    # kernel_sprite = create_kernel_cloud()
 
     clock = pygame.time.Clock()
     background_color = (0, 0, 0)
@@ -252,15 +270,34 @@ def main():
         )
         pygame.draw.rect(screen, bounds_color, bounds_rect, 2)
 
-        dt = min(clock.tick(0) / 1000.0, 0.05)
-        update(dt)
+        # Mouse interaction
+        mouse_screen = pygame.math.Vector2(pygame.mouse.get_pos())
+        mouse_logical = mouse_screen / SCALE - LOGICAL_SIZE / 2
+        mouse_buttons = pygame.mouse.get_pressed()
+        if mouse_buttons[0]:       # left click: attract
+            mouse_strength = interaction_strength
+        elif mouse_buttons[2]:     # right click: repel
+            mouse_strength = -interaction_strength
+        else:
+            mouse_strength = 0.0
+
+        # Draw interaction circle when mouse button is held
+        if mouse_strength != 0.0:
+            circle_color = (80, 180, 255) if mouse_strength > 0 else (255, 100, 80)
+            pygame.draw.circle(screen, circle_color, (int(mouse_screen.x), int(mouse_screen.y)),
+                               int(interaction_radius * SCALE), 2)
+
+        clock.tick(VIDEO_FPS)
+        fixed_dt = 0.005
+        for _ in range(4):
+            update(fixed_dt, mouse_logical if mouse_strength != 0.0 else None, mouse_strength)
 
         font = pygame.font.SysFont("Arial", 10)
         text = font.render(f"FPS: {clock.get_fps():.2f}", True, (255, 255, 255))
         screen.blit(text, (10, 10))
         pygame.display.flip()
 
-        video_frame_accum += dt
+        video_frame_accum += 1.0 / VIDEO_FPS
         if video_frame_accum >= 1.0 / VIDEO_FPS:
             video_frame_accum -= 1.0 / VIDEO_FPS
             frame = pygame.surfarray.array3d(screen)        # (W, H, 3) RGB
