@@ -24,7 +24,7 @@ particle_spacing = 0.05
 bounds_size = pygame.math.Vector2(8,5)
 bounds_color = (100, 100, 100)
 
-# --- SPH constants ---
+# SPH constants
 smoothing_radius = 0.3 
 particle_mass = 1 
 densities = []
@@ -34,7 +34,7 @@ pressure_multiplier = 30
 
 max_display_speed = 2.0
 
-# --- Mouse interaction ---
+# Interaction
 interaction_radius = 2
 interaction_strength = 50.0
 
@@ -45,7 +45,7 @@ def random_arrangment(half_bounds):
         positions.append(pygame.math.Vector2(x, y))
         velocities.append(pygame.math.Vector2(0, 0))
 
-def grid_arrangment(half_bounds):
+def grid_arrangment():
     particles_per_row = int(np.sqrt(num_particles))
     particles_per_col = (num_particles - 1) // particles_per_row + 1
     spacing = particle_size * 2 + particle_spacing
@@ -67,10 +67,11 @@ def start():
     half_bounds = bounds_size / 2 - pygame.math.Vector2(particle_size, particle_size)
 
     # random_arrangment(half_bounds)
-    grid_arrangment(half_bounds)
+    grid_arrangment()
 
-# --- SPH Math Functions ---
-
+""" 
+SPH Functions
+"""
 def smoothing_kernel(radius, distance):
     if distance >= radius:
         return 0.0
@@ -137,7 +138,9 @@ def calculate_pressure_force(particle_index):
         
     return pressure_force
 
-# --- Rendering ---
+"""
+Rendering
+"""
 
 def velocity_to_color(speed, max_speed):
     t = speed / max_speed if max_speed > 0 else 0.0
