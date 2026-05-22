@@ -31,6 +31,7 @@ densities = []
 
 target_density = 1.5
 pressure_multiplier = 30
+viscosity_strength = 0.06
 
 max_display_speed = 2.0
 
@@ -82,14 +83,21 @@ def smoothing_kernel(radius, distance):
 def smoothing_kernel_derivative(radius, distance):
     if distance >= radius:
         return 0.0
-    
+
     scale = 12.0 / ((radius ** 4.0) * math.pi)
     return (distance - radius) * scale
+
+def viscosity_kernel(radius, distance):
+    if distance >= radius:
+        return 0.0
+    scale = 4.0 / (math.pi * radius ** 8)
+    value = radius * radius - distance * distance
+    return value * value * value * scale
 
 def convert_density_to_pressure(density):
     density_error = density - target_density
     pressure = density_error * pressure_multiplier
-    return max(0.0, pressure)  # Clamp to zero to prevent vacuum attraction
+    return pressure  # Clamp to zero to prevent vacuum attraction
 
 def calculate_shared_pressure(density_a, density_b):
     pressure_a = convert_density_to_pressure(density_a)
@@ -108,16 +116,16 @@ def calculate_densities():
 
 def calculate_pressure_force(particle_index):
     pressure_force = pygame.math.Vector2(0, 0)
-    density_self = densities[particle_index] 
-    
+    viscosity_force = pygame.math.Vector2(0, 0)
+    density_self = densities[particle_index]
+
     for other_particle_index in range(num_particles):
         if particle_index == other_particle_index:
             continue
-            
-        # Use predicted positions for direction and distance
+
         offset = predicted_positions[other_particle_index] - predicted_positions[particle_index]
         dst = offset.magnitude()
-        
+
         if dst == 0:
             dir = pygame.math.Vector2(np.random.uniform(-1, 1), np.random.uniform(-1, 1))
             if dir.length() > 0:
@@ -126,17 +134,20 @@ def calculate_pressure_force(particle_index):
                 dir = pygame.math.Vector2(0, 1)
         else:
             dir = offset / dst
-            
+
         slope = smoothing_kernel_derivative(smoothing_radius, dst)
         density_other = densities[other_particle_index]
-        
+
         if density_other == 0:
             continue
-            
+
         shared_pressure = calculate_shared_pressure(density_self, density_other)
         pressure_force += dir * shared_pressure * slope * particle_mass / density_other
-        
-    return pressure_force
+
+        influence = viscosity_kernel(smoothing_radius, dst)
+        viscosity_force += (velocities[other_particle_index] - velocities[particle_index]) * influence
+
+    return pressure_force + viscosity_force * viscosity_strength
 
 """
 Rendering
