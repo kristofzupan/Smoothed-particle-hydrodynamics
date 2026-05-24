@@ -5,32 +5,32 @@ import time
 
 ti.init(arch=ti.metal)
 
-LOGICAL_SIZE_X = 20.0
-LOGICAL_SIZE_Y = 11.25
+LOGICAL_SIZE_X = 40.0
+LOGICAL_SIZE_Y = 22.5
 SCREEN_W = 1920
 SCREEN_H = 1080
 
-num_particles = 1000
+num_particles = 5000
 gravity = 10
 collision_damping = 0.9
 particle_size = 0.1
-particle_spacing = 0.05
+particle_spacing = 0
 
-bounds_size_x = 19.0
-bounds_size_y = 10.25
+bounds_size_x = 39.0
+bounds_size_y = 21.5
 
 # SPH constants
-smoothing_radius = 0.45
+smoothing_radius = 0.55
 particle_mass = 1.0
-target_density = 15
-pressure_multiplier = 140.0
-viscosity_strength = 0.2
+target_density =18
+pressure_multiplier = 500.0
+viscosity_strength = 0.1
 
 max_display_speed = 2.0
 
 # interaction
 interaction_radius = 5.0
-interaction_strength = 20.0
+interaction_strength = 100.0
 
 positions = ti.Vector.field(2, dtype=ti.f32, shape=num_particles)
 predicted_positions = ti.Vector.field(2, dtype=ti.f32, shape=num_particles)
@@ -124,7 +124,6 @@ def calculate_densities():
 @ti.func
 def calculate_pressure_force(particle_index: int) -> ti.Vector:
     pressure_force = ti.Vector([0.0, 0.0])
-    viscosity_force = ti.Vector([0.0, 0.0])
     density_self = densities[particle_index]
 
     for other_particle_index in range(num_particles):
@@ -136,10 +135,7 @@ def calculate_pressure_force(particle_index: int) -> ti.Vector:
 
         dir = ti.Vector([ti.random() * 2.0 - 1.0, ti.random() * 2.0 - 1.0])
         if dst == 0:
-            if len(dir) > 0:
-                dir = dir.norm()
-            else:
-                dir = ti.Vector([0.0, 1.0])# pygame.math.Vector2(0, 1)
+            dir = dir.normalized()
         else:
             dir = offset / dst
 
@@ -152,10 +148,7 @@ def calculate_pressure_force(particle_index: int) -> ti.Vector:
         shared_pressure = calculate_shared_pressure(density_self, density_other)
         pressure_force += dir * shared_pressure * slope * particle_mass / density_other
 
-        influence = viscosity_kernel(smoothing_radius, dst)
-        viscosity_force += (velocities[other_particle_index] - velocities[particle_index]) * influence
-
-    return pressure_force + viscosity_force * viscosity_strength
+    return pressure_force
 
 @ti.func
 def calculate_interaction_force(input_x: ti.f32, input_y: ti.f32, radius: ti.f32, strength: ti.f32, particle_index: int) -> ti.Vector:
@@ -200,6 +193,20 @@ def apply_forces(dt: ti.f32, mouse_x: ti.f32, mouse_y: ti.f32, mouse_strength: t
 def apply_new_velocities():
     for i in range(num_particles):
         velocities[i] = new_velocities[i]
+
+
+@ti.kernel
+def apply_viscosity(dt: ti.f32):
+    for i in range(num_particles):
+        visc_force = ti.Vector([0.0, 0.0])
+        for j in range(num_particles):
+            if i == j:
+                continue
+            offset = predicted_positions[j] - predicted_positions[i]
+            dst = offset.norm()
+            influence = viscosity_kernel(smoothing_radius, dst)
+            visc_force += (velocities[j] - velocities[i]) * influence
+        velocities[i] += visc_force * viscosity_strength * dt
 
 
 @ti.kernel
@@ -250,12 +257,13 @@ def main():
         elif window.is_pressed(ti.ui.RMB):
             mouse_strength = -interaction_strength
 
-        fixed_dt = 0.004
+        fixed_dt = 0.005
         for _ in range(4):
             update(fixed_dt)
             calculate_densities()
             apply_forces(fixed_dt, mouse_lx, mouse_ly, mouse_strength)
             apply_new_velocities()
+            apply_viscosity(fixed_dt)
             resolve_collisions(fixed_dt)
 
         update_render_data()
