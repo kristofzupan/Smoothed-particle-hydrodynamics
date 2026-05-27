@@ -2,6 +2,7 @@ import taichi as ti
 import numpy as np
 import math
 import time
+from skimage import measure as skimage_measure
 
 ti.init(arch=ti.metal)
 
@@ -25,6 +26,15 @@ target_density = 26.0
 pressure_multiplier = 500.0
 viscosity_strength = 0.05
 
+# mc grid resolution and threshold
+mc_res = 64
+mc_iso = 20.0
+# med grid pointi step size
+mc_dx = bounds_size_x / (mc_res - 1)
+mc_dy = bounds_size_y / (mc_res - 1)
+mc_dz = bounds_size_z / (mc_res - 1)
+MAX_MC_VERTS = mc_res * mc_res * mc_res #  ni nujndo dovolj.. ni bilo težav
+
 positions = ti.Vector.field(3, dtype=ti.f32, shape=num_particles)
 predicted_positions = ti.Vector.field(3, dtype=ti.f32, shape=num_particles)
 velocities = ti.Vector.field(3, dtype=ti.f32, shape=num_particles)
@@ -32,6 +42,10 @@ new_velocities = ti.Vector.field(3, dtype=ti.f32, shape=num_particles)
 densities = ti.field(dtype=ti.f32, shape=num_particles)
 
 bounds_verts = ti.Vector.field(3, dtype=ti.f32, shape=24)
+
+mc_field = ti.field(dtype=ti.f32, shape=(mc_res, mc_res, mc_res))
+mc_verts = ti.Vector.field(3, dtype=ti.f32, shape=MAX_MC_VERTS)
+mc_normals = ti.Vector.field(3, dtype=ti.f32, shape=MAX_MC_VERTS)
 
 @ti.kernel
 def grid_arrangement():
@@ -185,6 +199,49 @@ def resolve_collisions(dt: ti.f32):
             positions[i][2] = half_z * (1.0 if positions[i][2] > 0.0 else -1.0)
             velocities[i][2] *= -collision_damping
 
+@ti.kernel
+def build_mc():
+    # sample density at mc grid 
+    for xi, yi, zi in mc_field:
+        # zero borders so liquid is filled in  - manjkajoce stranice
+        if xi == 0 or xi == mc_res - 1 or yi == 0 or yi == mc_res - 1 or zi == 0 or zi == mc_res - 1:
+            mc_field[xi, yi, zi] = 0.0
+        else:
+            wx = -bounds_size_x * 0.5 + xi * mc_dx
+            wy = -bounds_size_y * 0.5 + yi * mc_dy
+            wz = -bounds_size_z * 0.5 + zi * mc_dz
+            point = ti.Vector([wx, wy, wz]) #grid point
+            density = 0.0
+            for j in range(num_particles): # optimizacija possible
+                distance = (point - positions[j]).norm()
+                density += particle_mass * smoothing_kernel(smoothing_radius, distance)
+            mc_field[xi, yi, zi] = density
+
+
+def extract_surface() -> int:
+    field_np = mc_field.to_numpy()
+    if field_np.max() < mc_iso: #nothing to show
+        return 0
+
+    verts, faces, normals, _ = skimage_measure.marching_cubes(field_np, level=mc_iso, spacing=(mc_dx, mc_dy, mc_dz))
+
+    # shift from grid-space origin to simulation world centre
+    verts -= [bounds_size_x * 0.5, bounds_size_y * 0.5, bounds_size_z * 0.5]
+
+    # flatten (skimg returns indexed, taichi needs flat)
+    tv = verts[faces.reshape(-1)].astype(np.float32)
+    tn = (normals[faces.reshape(-1)]).astype(np.float32)
+
+    n = min(len(tv), MAX_MC_VERTS) #number of active verts
+    vbuf = np.zeros((MAX_MC_VERTS, 3), dtype=np.float32) # taichi always needs same size so we pad with 0
+    nbuf = np.zeros((MAX_MC_VERTS, 3), dtype=np.float32) # isto
+    vbuf[:n] = tv[:n]
+    nbuf[:n] = tn[:n]
+    mc_verts.from_numpy(vbuf)
+    mc_normals.from_numpy(nbuf)
+    return n
+
+
 def main():
     window = ti.ui.Window("SPH", (SCREEN_W, SCREEN_H), fps_limit=30)
     canvas = window.get_canvas()
@@ -248,8 +305,12 @@ def main():
         scene.set_camera(camera)
         scene.ambient_light((0.3, 0.3, 0.3))
         scene.point_light(pos=(0.0, bounds_size_y * 2.0, bounds_size_z), color=(1.0, 1.0, 1.0))
-        scene.particles(positions, radius=particle_size, color=(0.0,0.0,1.0))
+        # scene.particles(positions, radius=particle_size, color=(0.0,0.0,1.0))
         scene.lines(bounds_verts, width=1.0, color=(0.4, 0.4, 0.4))
+
+        build_mc()
+
+        scene.mesh(mc_verts, normals=mc_normals, color=(0.1, 0.4, 0.9), vertex_count=extract_surface(), two_sided=True)
 
         canvas.set_background_color((0.0, 0.0, 0.0))
         canvas.scene(scene)
